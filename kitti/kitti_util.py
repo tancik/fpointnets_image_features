@@ -27,7 +27,7 @@ class Object3d(object):
         self.xmax = data[6] # right
         self.ymax = data[7] # bottom
         self.box2d = np.array([self.xmin,self.ymin,self.xmax,self.ymax])
-        
+
         # extract 3d bounding box information
         self.h = data[8] # box height
         self.w = data[9] # box width
@@ -84,7 +84,7 @@ class Calibration(object):
         else:
             calibs = self.read_calib_file(calib_filepath)
         # Projection matrix from rect camera coord to image2 coord
-        self.P = calibs['P2'] 
+        self.P = calibs['P2']
         self.P = np.reshape(self.P, [3,4])
         # Rigid transform from Velodyne coord to reference camera coord
         self.V2C = calibs['Tr_velo_to_cam']
@@ -99,7 +99,7 @@ class Calibration(object):
         self.c_v = self.P[1,2]
         self.f_u = self.P[0,0]
         self.f_v = self.P[1,1]
-        self.b_x = self.P[0,3]/(-self.f_u) # relative 
+        self.b_x = self.P[0,3]/(-self.f_u) # relative
         self.b_y = self.P[1,3]/(-self.f_v)
 
     def read_calib_file(self, filepath):
@@ -120,7 +120,7 @@ class Calibration(object):
                     pass
 
         return data
-    
+
     def read_calib_from_video(self, calib_root_dir):
         ''' Read calibration for camera 2 from video calib files.
             there are calib_cam_to_cam and calib_velo_to_cam under the calib_root_dir
@@ -143,10 +143,10 @@ class Calibration(object):
         n = pts_3d.shape[0]
         pts_3d_hom = np.hstack((pts_3d, np.ones((n,1))))
         return pts_3d_hom
- 
-    # =========================== 
-    # ------- 3d to 3d ---------- 
-    # =========================== 
+
+    # ===========================
+    # ------- 3d to 3d ----------
+    # ===========================
     def project_velo_to_ref(self, pts_3d_velo):
         pts_3d_velo = self.cart2hom(pts_3d_velo) # nx4
         return np.dot(pts_3d_velo, np.transpose(self.V2C))
@@ -158,15 +158,15 @@ class Calibration(object):
     def project_rect_to_ref(self, pts_3d_rect):
         ''' Input and Output are nx3 points '''
         return np.transpose(np.dot(np.linalg.inv(self.R0), np.transpose(pts_3d_rect)))
-    
+
     def project_ref_to_rect(self, pts_3d_ref):
         ''' Input and Output are nx3 points '''
         return np.transpose(np.dot(self.R0, np.transpose(pts_3d_ref)))
- 
+
     def project_rect_to_velo(self, pts_3d_rect):
         ''' Input: nx3 points in rect camera coord.
             Output: nx3 points in velodyne coord.
-        ''' 
+        '''
         pts_3d_ref = self.project_rect_to_ref(pts_3d_rect)
         return self.project_ref_to_velo(pts_3d_ref)
 
@@ -174,9 +174,9 @@ class Calibration(object):
         pts_3d_ref = self.project_velo_to_ref(pts_3d_velo)
         return self.project_ref_to_rect(pts_3d_ref)
 
-    # =========================== 
-    # ------- 3d to 2d ---------- 
-    # =========================== 
+    # ===========================
+    # ------- 3d to 2d ----------
+    # ===========================
     def project_rect_to_image(self, pts_3d_rect):
         ''' Input: nx3 points in rect camera coord.
             Output: nx2 points in image2 coord.
@@ -186,7 +186,7 @@ class Calibration(object):
         pts_2d[:,0] /= pts_2d[:,2]
         pts_2d[:,1] /= pts_2d[:,2]
         return pts_2d[:,0:2]
-    
+
     def project_velo_to_image(self, pts_3d_velo):
         ''' Input: nx3 points in velodyne coord.
             Output: nx2 points in image2 coord.
@@ -194,9 +194,9 @@ class Calibration(object):
         pts_3d_rect = self.project_velo_to_rect(pts_3d_velo)
         return self.project_rect_to_image(pts_3d_rect)
 
-    # =========================== 
-    # ------- 2d to 3d ---------- 
-    # =========================== 
+    # ===========================
+    # ------- 2d to 3d ----------
+    # ===========================
     def project_image_to_rect(self, uv_depth):
         ''' Input: nx3 first two channels are uv, 3rd channel
                    is depth in rect camera coord.
@@ -215,7 +215,7 @@ class Calibration(object):
         pts_3d_rect = self.project_image_to_rect(uv_depth)
         return self.project_rect_to_velo(pts_3d_rect)
 
- 
+
 def rotx(t):
     ''' 3D Rotation about the x-axis. '''
     c = np.cos(t)
@@ -288,7 +288,7 @@ def project_to_image(pts_3d, P):
     '''
     n = pts_3d.shape[0]
     pts_3d_extend = np.hstack((pts_3d, np.ones((n,1))))
-    print(('pts_3d_extend shape: ', pts_3d_extend.shape))
+    # print(('pts_3d_extend shape: ', pts_3d_extend.shape))
     pts_2d = np.dot(pts_3d_extend, np.transpose(P)) # nx3
     pts_2d[:,0] /= pts_2d[:,2]
     pts_2d[:,1] /= pts_2d[:,2]
@@ -303,30 +303,30 @@ def compute_box_3d(obj, P):
             corners_3d: (8,3) array in in rect camera coord.
     '''
     # compute rotational matrix around yaw axis
-    R = roty(obj.ry)    
+    R = roty(obj.ry)
 
     # 3d bounding box dimensions
     l = obj.l;
     w = obj.w;
     h = obj.h;
-    
+
     # 3d bounding box corners
     x_corners = [l/2,l/2,-l/2,-l/2,l/2,l/2,-l/2,-l/2];
     y_corners = [0,0,0,0,-h,-h,-h,-h];
     z_corners = [w/2,-w/2,-w/2,w/2,w/2,-w/2,-w/2,w/2];
-    
+
     # rotate and translate 3d bounding box
     corners_3d = np.dot(R, np.vstack([x_corners,y_corners,z_corners]))
     #print corners_3d.shape
     corners_3d[0,:] = corners_3d[0,:] + obj.t[0];
     corners_3d[1,:] = corners_3d[1,:] + obj.t[1];
     corners_3d[2,:] = corners_3d[2,:] + obj.t[2];
-    #print 'cornsers_3d: ', corners_3d 
+    #print 'cornsers_3d: ', corners_3d
     # only draw 3d bounding box for objs in front of the camera
     if np.any(corners_3d[2,:]<0.1):
         corners_2d = None
         return corners_2d, np.transpose(corners_3d)
-    
+
     # project the 3d bounding box into the image plane
     corners_2d = project_to_image(np.transpose(corners_3d), P);
     #print 'corners_2d: ', corners_2d
@@ -340,24 +340,24 @@ def compute_orientation_3d(obj, P):
             orientation_2d: (2,2) array in left image coord.
             orientation_3d: (2,3) array in in rect camera coord.
     '''
-    
+
     # compute rotational matrix around yaw axis
     R = roty(obj.ry)
-   
+
     # orientation in object coordinate system
     orientation_3d = np.array([[0.0, obj.l],[0,0],[0,0]])
-    
+
     # rotate and translate in camera coordinate system, project in image
     orientation_3d = np.dot(R, orientation_3d)
     orientation_3d[0,:] = orientation_3d[0,:] + obj.t[0]
     orientation_3d[1,:] = orientation_3d[1,:] + obj.t[1]
     orientation_3d[2,:] = orientation_3d[2,:] + obj.t[2]
-    
+
     # vector behind image plane?
     if np.any(orientation_3d[2,:]<0.1):
       orientation_2d = None
       return orientation_2d, np.transpose(orientation_3d)
-    
+
     # project orientation into the image plane
     orientation_2d = project_to_image(np.transpose(orientation_3d), P);
     return orientation_2d, np.transpose(orientation_3d)
@@ -378,11 +378,11 @@ def draw_projected_box3d(image, qs, color=(255,255,255), thickness=2):
        # Ref: http://docs.enthought.com/mayavi/mayavi/auto/mlab_helper_functions.html
        i,j=k,(k+1)%4
        # use LINE_AA for opencv3
-       cv2.line(image, (qs[i,0],qs[i,1]), (qs[j,0],qs[j,1]), color, thickness, cv2.CV_AA)
+       cv2.line(image, (qs[i,0],qs[i,1]), (qs[j,0],qs[j,1]), color, thickness, cv2.LINE_AA)
 
        i,j=k+4,(k+1)%4 + 4
-       cv2.line(image, (qs[i,0],qs[i,1]), (qs[j,0],qs[j,1]), color, thickness, cv2.CV_AA)
+       cv2.line(image, (qs[i,0],qs[i,1]), (qs[j,0],qs[j,1]), color, thickness, cv2.LINE_AA)
 
        i,j=k,k+4
-       cv2.line(image, (qs[i,0],qs[i,1]), (qs[j,0],qs[j,1]), color, thickness, cv2.CV_AA)
+       cv2.line(image, (qs[i,0],qs[i,1]), (qs[j,0],qs[j,1]), color, thickness, cv2.LINE_AA)
     return image

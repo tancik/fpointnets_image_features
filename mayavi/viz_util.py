@@ -47,10 +47,10 @@ def draw_lidar(pc, color=None, fig=None, bgcolor=(0,0,0), pts_scale=1, pts_mode=
     if fig is None: fig = mlab.figure(figure=None, bgcolor=bgcolor, fgcolor=None, engine=None, size=(1600, 1000))
     if color is None: color = pc[:,2]
     mlab.points3d(pc[:,0], pc[:,1], pc[:,2], color, color=pts_color, mode=pts_mode, colormap = 'gnuplot', scale_factor=pts_scale, figure=fig)
-    
+
     #draw origin
     mlab.points3d(0, 0, 0, color=(1,1,1), mode='sphere', scale_factor=0.2)
-    
+
     #draw axis
     axes=np.array([
         [2.,0.,0.,0.],
@@ -66,10 +66,10 @@ def draw_lidar(pc, color=None, fig=None, bgcolor=(0,0,0), pts_scale=1, pts_mode=
         [20., 20., 0.,0.],
         [20.,-20., 0.,0.],
     ],dtype=np.float64)
-    
+
     mlab.plot3d([0, fov[0,0]], [0, fov[0,1]], [0, fov[0,2]], color=(1,1,1), tube_radius=None, line_width=1, figure=fig)
     mlab.plot3d([0, fov[1,0]], [0, fov[1,1]], [0, fov[1,2]], color=(1,1,1), tube_radius=None, line_width=1, figure=fig)
-   
+
     # draw square region
     TOP_Y_MIN=-20
     TOP_Y_MAX=20
@@ -77,7 +77,7 @@ def draw_lidar(pc, color=None, fig=None, bgcolor=(0,0,0), pts_scale=1, pts_mode=
     TOP_X_MAX=40
     TOP_Z_MIN=-2.0
     TOP_Z_MAX=0.4
-    
+
     x1 = TOP_X_MIN
     x2 = TOP_X_MAX
     y1 = TOP_Y_MIN
@@ -86,7 +86,7 @@ def draw_lidar(pc, color=None, fig=None, bgcolor=(0,0,0), pts_scale=1, pts_mode=
     mlab.plot3d([x2, x2], [y1, y2], [0,0], color=(0.5,0.5,0.5), tube_radius=0.1, line_width=1, figure=fig)
     mlab.plot3d([x1, x2], [y1, y1], [0,0], color=(0.5,0.5,0.5), tube_radius=0.1, line_width=1, figure=fig)
     mlab.plot3d([x1, x2], [y2, y2], [0,0], color=(0.5,0.5,0.5), tube_radius=0.1, line_width=1, figure=fig)
-    
+
     #mlab.orientation_axes()
     mlab.view(azimuth=180, elevation=70, focalpoint=[ 12.0909996 , -1.04700089, -2.03249991], distance=62.0, figure=fig)
     return fig
@@ -103,12 +103,12 @@ def draw_gt_boxes3d(gt_boxes3d, fig, color=(1,1,1), line_width=1, draw_text=True
         color_list: a list of RGB tuple, if not None, overwrite color.
     Returns:
         fig: updated fig
-    ''' 
+    '''
     num = len(gt_boxes3d)
     for n in range(num):
         b = gt_boxes3d[n]
         if color_list is not None:
-            color = color_list[n] 
+            color = color_list[n]
         if draw_text: mlab.text3d(b[4,0], b[4,1], b[4,2], '%d'%n, scale=text_scale, color=color, figure=fig)
         for k in range(0,4):
             #http://docs.enthought.com/mayavi/mayavi/auto/mlab_helper_functions.html

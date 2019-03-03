@@ -48,7 +48,7 @@ def tf_gather_object_pc(point_cloud, mask, npoints=512):
         for i in range(mask.shape[0]):
             pos_indices = np.where(mask[i,:]>0.5)[0]
             # skip cases when pos_indices is empty
-            if len(pos_indices) > 0: 
+            if len(pos_indices) > 0:
                 if len(pos_indices) > npoints:
                     choice = np.random.choice(len(pos_indices),
                         npoints, replace=False)
@@ -61,7 +61,7 @@ def tf_gather_object_pc(point_cloud, mask, npoints=512):
             indices[i,:,0] = i
         return indices
 
-    indices = tf.py_func(mask_to_indices, [mask], tf.int32)  
+    indices = tf.py_func(mask_to_indices, [mask], tf.int32)
     object_pc = tf.gather_nd(point_cloud, indices)
     return object_pc, indices
 
@@ -105,7 +105,7 @@ def get_box3d_corners(center, heading_residuals, size_residuals):
     batch_size = center.get_shape()[0].value
     heading_bin_centers = tf.constant(np.arange(0,2*np.pi,2*np.pi/NUM_HEADING_BIN), dtype=tf.float32) # (NH,)
     headings = heading_residuals + tf.expand_dims(heading_bin_centers, 0) # (B,NH)
-    
+
     mean_sizes = tf.expand_dims(tf.constant(g_mean_size_arr, dtype=tf.float32), 0) + size_residuals # (B,NS,1)
     sizes = mean_sizes + size_residuals # (B,NS,3)
     sizes = tf.tile(tf.expand_dims(sizes,1), [1,NUM_HEADING_BIN,1,1]) # (B,NH,NS,3)
@@ -146,7 +146,7 @@ def parse_output_to_tensors(output, end_points):
         heading_residuals_normalized # BxNUM_HEADING_BIN (-1 to 1)
     end_points['heading_residuals'] = \
         heading_residuals_normalized * (np.pi/NUM_HEADING_BIN) # BxNUM_HEADING_BIN
-    
+
     size_scores = tf.slice(output, [0,3+NUM_HEADING_BIN*2],
         [-1,NUM_SIZE_CLUSTER]) # BxNUM_SIZE_CLUSTER
     size_residuals_normalized = tf.slice(output,
@@ -192,7 +192,7 @@ def placeholder_inputs(batch_size, num_point):
 def point_cloud_masking(point_cloud, logits, end_points, xyz_only=True):
     ''' Select point cloud with predicted 3D mask,
     translate coordinates to the masked points centroid.
-    
+
     Input:
         point_cloud: TF tensor in shape (B,N,C)
         logits: TF tensor in shape (B,N,2)
@@ -238,7 +238,7 @@ def point_cloud_masking(point_cloud, logits, end_points, xyz_only=True):
 
 
 def get_center_regression_net(object_point_cloud, one_hot_vec,
-                              is_training, bn_decay, end_points):
+                              is_training, bn_decay, end_points, bn=True, int_layers=None, fc_scale=None):
     ''' Regression network for center delta. a.k.a. T-Net.
     Input:
         object_point_cloud: TF tensor in shape (B,M,C)
@@ -247,28 +247,43 @@ def get_center_regression_net(object_point_cloud, one_hot_vec,
             length-3 vectors indicating predicted object type
     Output:
         predicted_center: TF tensor in shape (B,3)
-    ''' 
+    '''
     num_point = object_point_cloud.get_shape()[1].value
     net = tf.expand_dims(object_point_cloud, 2)
     net = tf_util.conv2d(net, 128, [1,1],
                          padding='VALID', stride=[1,1],
-                         bn=True, is_training=is_training,
+                         bn=bn, is_training=is_training,
                          scope='conv-reg1-stage1', bn_decay=bn_decay)
     net = tf_util.conv2d(net, 128, [1,1],
                          padding='VALID', stride=[1,1],
-                         bn=True, is_training=is_training,
+                         bn=bn, is_training=is_training,
                          scope='conv-reg2-stage1', bn_decay=bn_decay)
     net = tf_util.conv2d(net, 256, [1,1],
                          padding='VALID', stride=[1,1],
-                         bn=True, is_training=is_training,
+                         bn=bn, is_training=is_training,
                          scope='conv-reg3-stage1', bn_decay=bn_decay)
     net = tf_util.max_pool2d(net, [num_point,1],
         padding='VALID', scope='maxpool-stage1')
     net = tf.squeeze(net, axis=[1,2])
     net = tf.concat([net, one_hot_vec], axis=1)
-    net = tf_util.fully_connected(net, 256, scope='fc1-stage1', bn=True,
+
+    ## Custom feature layer
+    if int_layers is not None:
+        if fc_scale is not None:
+            int_layers = tf_util.fully_connected(int_layers, fc_scale, bn=True,
+                is_training=is_training, scope='cent_int_scale', bn_decay=bn_decay)
+            int_layers = tf_util.dropout(int_layers, keep_prob=0.6,
+                is_training=is_training, scope='seg_int_dp2')
+            # int_layers = tf_util.fully_connected(int_layers, fc_scale, bn=True,
+            #     is_training=is_training, scope='cent_int_scal_2e', bn_decay=bn_decay)
+            # int_layers = tf_util.dropout(int_layers, keep_prob=0.5,
+            #     is_training=is_training, scope='seg_int_dp2')
+
+        net = tf.concat([net, int_layers], axis=1)
+
+    net = tf_util.fully_connected(net, 256, scope='fc1-stage1', bn=bn,
         is_training=is_training, bn_decay=bn_decay)
-    net = tf_util.fully_connected(net, 128, scope='fc2-stage1', bn=True,
+    net = tf_util.fully_connected(net, 128, scope='fc2-stage1', bn=bn,
         is_training=is_training, bn_decay=bn_decay)
     predicted_center = tf_util.fully_connected(net, 3, activation_fn=None,
         scope='fc3-stage1')
@@ -285,8 +300,8 @@ def get_loss(mask_label, center_label, \
     Input:
         mask_label: TF int32 tensor in shape (B,N)
         center_label: TF tensor in shape (B,3)
-        heading_class_label: TF int32 tensor in shape (B,) 
-        heading_residual_label: TF tensor in shape (B,) 
+        heading_class_label: TF int32 tensor in shape (B,)
+        heading_residual_label: TF tensor in shape (B,)
         size_class_label: TF tensor int32 in shape (B,)
         size_residual_label: TF tensor tensor in shape (B,)
         end_points: dict, outputs from our model
@@ -354,7 +369,7 @@ def get_loss(mask_label, center_label, \
         size_residual_normalized_loss)
 
     # Corner loss
-    # We select the predicted corners corresponding to the 
+    # We select the predicted corners corresponding to the
     # GT heading bin and size cluster.
     corners_3d = get_box3d_corners(end_points['center'],
         end_points['heading_residuals'],
@@ -383,7 +398,7 @@ def get_loss(mask_label, center_label, \
 
     corners_dist = tf.minimum(tf.norm(corners_3d_pred - corners_3d_gt, axis=-1),
         tf.norm(corners_3d_pred - corners_3d_gt_flip, axis=-1))
-    corners_loss = huber_loss(corners_dist, delta=1.0) 
+    corners_loss = huber_loss(corners_dist, delta=1.0)
     tf.summary.scalar('corners loss', corners_loss)
 
     # Weighted sum of all losses

@@ -33,6 +33,9 @@ parser.add_argument('--decay_step', type=int, default=200000, help='Decay step f
 parser.add_argument('--decay_rate', type=float, default=0.7, help='Decay rate for lr decay [default: 0.7]')
 parser.add_argument('--no_intensity', action='store_true', help='Only use XYZ for training')
 parser.add_argument('--restore_model_path', default=None, help='Restore model path e.g. log/model.ckpt [default: None]')
+parser.add_argument('--no_bn', action='store_true', help='Skip batch normalization')
+parser.add_argument('--int_layers', nargs='+', help='Which int layers to include', default=None)
+parser.add_argument('--fc_scale', type=int, help='Which int layers to include', default=None)
 FLAGS = parser.parse_args()
 
 # Set training configurations
@@ -46,6 +49,7 @@ MOMENTUM = FLAGS.momentum
 OPTIMIZER = FLAGS.optimizer
 DECAY_STEP = FLAGS.decay_step
 DECAY_RATE = FLAGS.decay_rate
+BN = not FLAGS.no_bn
 NUM_CHANNEL = 3 if FLAGS.no_intensity else 4 # point feature channel
 NUM_CLASSES = 2 # segmentation has two classes
 
@@ -64,8 +68,10 @@ BN_DECAY_DECAY_STEP = float(DECAY_STEP)
 BN_DECAY_CLIP = 0.99
 
 # Load Frustum Datasets. Use default data paths.
+# TRAIN_DATASET = provider.FrustumDataset(npoints=NUM_POINT, split='train',
+#     rotate_to_center=True, random_flip=True, random_shift=True, one_hot=True)
 TRAIN_DATASET = provider.FrustumDataset(npoints=NUM_POINT, split='train',
-    rotate_to_center=True, random_flip=True, random_shift=True, one_hot=True)
+    rotate_to_center=True, random_shift=True, one_hot=True)
 TEST_DATASET = provider.FrustumDataset(npoints=NUM_POINT, split='val',
     rotate_to_center=True, one_hot=True)
 
@@ -82,7 +88,7 @@ def get_learning_rate(batch):
                         DECAY_RATE,          # Decay rate.
                         staircase=True)
     learing_rate = tf.maximum(learning_rate, 0.00001) # CLIP THE LEARNING RATE!
-    return learning_rate        
+    return learning_rate
 
 def get_bn_decay(batch):
     bn_momentum = tf.train.exponential_decay(
@@ -104,8 +110,23 @@ def train():
                 MODEL.placeholder_inputs(BATCH_SIZE, NUM_POINT)
 
             is_training_pl = tf.placeholder(tf.bool, shape=())
-            
-            # Note the global_step=batch parameter to minimize. 
+
+            if FLAGS.int_layers is None:
+                int_layers_pl = None
+            else:
+                int_layer_size = 0
+                for int_layer in FLAGS.int_layers:
+                    if int_layer == 'dim':
+                        int_layer_size += 512
+                    elif int_layer == 'orient':
+                        int_layer_size += 256
+                    elif int_layer == 'conf':
+                        int_layer_size += 256
+                    elif int_layer == 'conv':
+                        int_layer_size += 25088
+                int_layers_pl = tf.placeholder(tf.float32, shape=(BATCH_SIZE,int_layer_size))
+
+            # Note the global_step=batch parameter to minimize.
             # That tells the optimizer to increment the 'batch' parameter
             # for you every time it trains.
             batch = tf.get_variable('batch', [],
@@ -113,9 +134,9 @@ def train():
             bn_decay = get_bn_decay(batch)
             tf.summary.scalar('bn_decay', bn_decay)
 
-            # Get model and losses 
+            # Get model and losses
             end_points = MODEL.get_model(pointclouds_pl, one_hot_vec_pl,
-                is_training_pl, bn_decay=bn_decay)
+                is_training_pl, bn_decay=bn_decay, bn=BN, int_layers=int_layers_pl, fc_scale=FLAGS.fc_scale)
             loss = MODEL.get_loss(labels_pl, centers_pl,
                 heading_class_label_pl, heading_residual_label_pl,
                 size_class_label_pl, size_residual_label_pl, end_points)
@@ -134,8 +155,8 @@ def train():
                 heading_class_label_pl, heading_residual_label_pl, \
                 size_class_label_pl, size_residual_label_pl], \
                 [tf.float32, tf.float32])
-            end_points['iou2ds'] = iou2ds 
-            end_points['iou3ds'] = iou3ds 
+            end_points['iou2ds'] = iou2ds
+            end_points['iou3ds'] = iou3ds
             tf.summary.scalar('iou_2d', tf.reduce_mean(iou2ds))
             tf.summary.scalar('iou_3d', tf.reduce_mean(iou3ds))
 
@@ -154,10 +175,10 @@ def train():
             elif OPTIMIZER == 'adam':
                 optimizer = tf.train.AdamOptimizer(learning_rate)
             train_op = optimizer.minimize(loss, global_step=batch)
-            
+
             # Add ops to save and restore all the variables.
             saver = tf.train.Saver()
-        
+
         # Create a session
         config = tf.ConfigProto()
         config.gpu_options.allow_growth = True
@@ -192,12 +213,14 @@ def train():
                'train_op': train_op,
                'merged': merged,
                'step': batch,
-               'end_points': end_points}
+               'end_points': end_points,
+               'int_layers_pl': int_layers_pl,
+               'inc_int_layer': FLAGS.int_layers}
 
         for epoch in range(MAX_EPOCH):
             log_string('**** EPOCH %03d ****' % (epoch))
             sys.stdout.flush()
-             
+
             train_one_epoch(sess, ops, train_writer)
             eval_one_epoch(sess, ops, test_writer)
 
@@ -212,11 +235,11 @@ def train_one_epoch(sess, ops, train_writer):
     '''
     is_training = True
     log_string(str(datetime.now()))
-    
+
     # Shuffle train samples
     train_idxs = np.arange(0, len(TRAIN_DATASET))
     np.random.shuffle(train_idxs)
-    num_batches = len(TRAIN_DATASET)/BATCH_SIZE
+    num_batches = int(len(TRAIN_DATASET)/BATCH_SIZE)
 
     # To collect statistics
     total_correct = 0
@@ -234,9 +257,25 @@ def train_one_epoch(sess, ops, train_writer):
         batch_data, batch_label, batch_center, \
         batch_hclass, batch_hres, \
         batch_sclass, batch_sres, \
-        batch_rot_angle, batch_one_hot_vec = \
+        batch_rot_angle, batch_one_hot_vec, \
+        batch_dim_int, batch_orient_int, batch_conf_int, batch_conv_int = \
             get_batch(TRAIN_DATASET, train_idxs, start_idx, end_idx,
                 NUM_POINT, NUM_CHANNEL)
+
+        if ops['inc_int_layer'] is None:
+            batch_int_layer = None
+        else:
+            batch_int_layer = []
+            for int_layer in ops['inc_int_layer']:
+                if int_layer == 'dim':
+                    batch_int_layer.append(batch_dim_int)
+                elif int_layer == 'orient':
+                    batch_int_layer.append(batch_orient_int)
+                elif int_layer == 'conf':
+                    batch_int_layer.append(batch_conf_int)
+                elif int_layer == 'conv':
+                    batch_int_layer.append(batch_conv_int)
+            batch_int_layer = np.concatenate(batch_int_layer, axis=1)
 
         feed_dict = {ops['pointclouds_pl']: batch_data,
                      ops['one_hot_vec_pl']: batch_one_hot_vec,
@@ -246,13 +285,14 @@ def train_one_epoch(sess, ops, train_writer):
                      ops['heading_residual_label_pl']: batch_hres,
                      ops['size_class_label_pl']: batch_sclass,
                      ops['size_residual_label_pl']: batch_sres,
-                     ops['is_training_pl']: is_training,}
+                     ops['is_training_pl']: is_training,
+                     ops['int_layers_pl']:batch_int_layer}
 
         summary, step, _, loss_val, logits_val, centers_pred_val, \
         iou2ds, iou3ds = \
             sess.run([ops['merged'], ops['step'], ops['train_op'], ops['loss'],
                 ops['logits'], ops['centers_pred'],
-                ops['end_points']['iou2ds'], ops['end_points']['iou3ds']], 
+                ops['end_points']['iou2ds'], ops['end_points']['iou3ds']],
                 feed_dict=feed_dict)
 
         train_writer.add_summary(summary, step)
@@ -281,8 +321,8 @@ def train_one_epoch(sess, ops, train_writer):
             iou2ds_sum = 0
             iou3ds_sum = 0
             iou3d_correct_cnt = 0
-        
-        
+
+
 def eval_one_epoch(sess, ops, test_writer):
     ''' Simple evaluation for one epoch on the frustum dataset.
     ops is dict mapping from string to tf ops """
@@ -292,7 +332,7 @@ def eval_one_epoch(sess, ops, test_writer):
     log_string(str(datetime.now()))
     log_string('---- EPOCH %03d EVALUATION ----'%(EPOCH_CNT))
     test_idxs = np.arange(0, len(TEST_DATASET))
-    num_batches = len(TEST_DATASET)/BATCH_SIZE
+    num_batches = int(len(TEST_DATASET)/BATCH_SIZE)
 
     # To collect statistics
     total_correct = 0
@@ -303,8 +343,8 @@ def eval_one_epoch(sess, ops, test_writer):
     iou2ds_sum = 0
     iou3ds_sum = 0
     iou3d_correct_cnt = 0
-   
-    # Simple evaluation with batches 
+
+    # Simple evaluation with batches
     for batch_idx in range(num_batches):
         start_idx = batch_idx * BATCH_SIZE
         end_idx = (batch_idx+1) * BATCH_SIZE
@@ -312,9 +352,25 @@ def eval_one_epoch(sess, ops, test_writer):
         batch_data, batch_label, batch_center, \
         batch_hclass, batch_hres, \
         batch_sclass, batch_sres, \
-        batch_rot_angle, batch_one_hot_vec = \
+        batch_rot_angle, batch_one_hot_vec, \
+        batch_dim_int, batch_orient_int, batch_conf_int, batch_conv_int = \
             get_batch(TEST_DATASET, test_idxs, start_idx, end_idx,
                 NUM_POINT, NUM_CHANNEL)
+
+        if ops['inc_int_layer'] is None:
+            batch_int_layer = None
+        else:
+            batch_int_layer = []
+            for int_layer in ops['inc_int_layer']:
+                if int_layer == 'dim':
+                    batch_int_layer.append(batch_dim_int)
+                elif int_layer == 'orient':
+                    batch_int_layer.append(batch_orient_int)
+                elif int_layer == 'conf':
+                    batch_int_layer.append(batch_conf_int)
+                elif int_layer == 'conv':
+                    batch_int_layer.append(batch_conv_int)
+            batch_int_layer = np.concatenate(batch_int_layer, axis=1)
 
         feed_dict = {ops['pointclouds_pl']: batch_data,
                      ops['one_hot_vec_pl']: batch_one_hot_vec,
@@ -324,11 +380,12 @@ def eval_one_epoch(sess, ops, test_writer):
                      ops['heading_residual_label_pl']: batch_hres,
                      ops['size_class_label_pl']: batch_sclass,
                      ops['size_residual_label_pl']: batch_sres,
-                     ops['is_training_pl']: is_training}
+                     ops['is_training_pl']: is_training,
+                     ops['int_layers_pl']:batch_int_layer}
 
         summary, step, loss_val, logits_val, iou2ds, iou3ds = \
             sess.run([ops['merged'], ops['step'],
-                ops['loss'], ops['logits'], 
+                ops['loss'], ops['logits'],
                 ops['end_points']['iou2ds'], ops['end_points']['iou3ds']],
                 feed_dict=feed_dict)
         test_writer.add_summary(summary, step)
@@ -347,10 +404,10 @@ def eval_one_epoch(sess, ops, test_writer):
 
         for i in range(BATCH_SIZE):
             segp = preds_val[i,:]
-            segl = batch_label[i,:] 
+            segl = batch_label[i,:]
             part_ious = [0.0 for _ in range(NUM_CLASSES)]
             for l in range(NUM_CLASSES):
-                if (np.sum(segl==l) == 0) and (np.sum(segp==l) == 0): 
+                if (np.sum(segl==l) == 0) and (np.sum(segp==l) == 0):
                     part_ious[l] = 1.0 # class not present
                 else:
                     part_ious[l] = np.sum((segl==l) & (segp==l)) / \
@@ -367,7 +424,7 @@ def eval_one_epoch(sess, ops, test_writer):
             float(num_batches*BATCH_SIZE)))
     log_string('eval box estimation accuracy (IoU=0.7): %f' % \
         (float(iou3d_correct_cnt)/float(num_batches*BATCH_SIZE)))
-         
+
     EPOCH_CNT += 1
 
 

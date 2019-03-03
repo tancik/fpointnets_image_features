@@ -13,7 +13,7 @@ import argparse
 import importlib
 import numpy as np
 import tensorflow as tf
-import cPickle as pickle
+import pickle
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)
 sys.path.append(BASE_DIR)
@@ -33,6 +33,9 @@ parser.add_argument('--data_path', default=None, help='frustum dataset pickle fi
 parser.add_argument('--from_rgb_detection', action='store_true', help='test from dataset files from rgb detection.')
 parser.add_argument('--idx_path', default=None, help='filename of txt where each line is a data idx, used for rgb detection -- write <id>.txt for all frames. [default: None]')
 parser.add_argument('--dump_result', action='store_true', help='If true, also dump results to .pickle file')
+parser.add_argument('--no_bn', action='store_true', help='Skip batch normalization')
+parser.add_argument('--int_layers', nargs='+', help='Which int layers to include', default=None)
+parser.add_argument('--fc_scale', type=int, help='Which int layers to include', default=None)
 FLAGS = parser.parse_args()
 
 # Set training configurations
@@ -43,6 +46,7 @@ NUM_POINT = FLAGS.num_point
 MODEL = importlib.import_module(FLAGS.model)
 NUM_CLASSES = 2
 NUM_CHANNEL = 4
+BN = not FLAGS.no_bn
 
 # Load Frustum Datasets.
 TEST_DATASET = provider.FrustumDataset(npoints=NUM_POINT, split='val',
@@ -55,13 +59,28 @@ def get_session_and_ops(batch_size, num_point):
     '''
     with tf.Graph().as_default():
         with tf.device('/gpu:'+str(GPU_INDEX)):
+            if FLAGS.int_layers is None:
+                int_layer_size = 0
+                int_layers_pl = None
+            else:
+                int_layer_size = 0
+                for int_layer in FLAGS.int_layers:
+                    if int_layer == 'dim':
+                        int_layer_size += 512
+                    elif int_layer == 'orient':
+                        int_layer_size += 256
+                    elif int_layer == 'conf':
+                        int_layer_size += 256
+                    elif int_layer == 'conv':
+                        int_layer_size += 25088
+                int_layers_pl = tf.placeholder(tf.float32, shape=(BATCH_SIZE,int_layer_size))
             pointclouds_pl, one_hot_vec_pl, labels_pl, centers_pl, \
             heading_class_label_pl, heading_residual_label_pl, \
             size_class_label_pl, size_residual_label_pl = \
                 MODEL.placeholder_inputs(batch_size, num_point)
             is_training_pl = tf.placeholder(tf.bool, shape=())
             end_points = MODEL.get_model(pointclouds_pl, one_hot_vec_pl,
-                is_training_pl)
+                is_training_pl, bn=BN, int_layers=int_layers_pl,  fc_scale=FLAGS.fc_scale)
             loss = MODEL.get_loss(labels_pl, centers_pl,
                 heading_class_label_pl, heading_residual_label_pl,
                 size_class_label_pl, size_residual_label_pl, end_points)
@@ -87,7 +106,10 @@ def get_session_and_ops(batch_size, num_point):
                'logits': end_points['mask_logits'],
                'center': end_points['center'],
                'end_points': end_points,
-               'loss': loss}
+               'loss': loss,
+               'int_layers_pl': int_layers_pl,
+               'inc_int_layer': FLAGS.int_layers,
+               'int_layer_size': int_layer_size}
         return sess, ops
 
 def softmax(x):
@@ -97,24 +119,31 @@ def softmax(x):
     probs /= np.sum(probs, axis=len(shape)-1, keepdims=True)
     return probs
 
-def inference(sess, ops, pc, one_hot_vec, batch_size):
+def inference(sess, ops, pc, one_hot_vec, batch_size, int_layer=None):
     ''' Run inference for frustum pointnets in batch mode '''
     assert pc.shape[0]%batch_size == 0
-    num_batches = pc.shape[0]/batch_size
+    num_batches = int(pc.shape[0]/batch_size)
     logits = np.zeros((pc.shape[0], pc.shape[1], NUM_CLASSES))
     centers = np.zeros((pc.shape[0], 3))
     heading_logits = np.zeros((pc.shape[0], NUM_HEADING_BIN))
     heading_residuals = np.zeros((pc.shape[0], NUM_HEADING_BIN))
     size_logits = np.zeros((pc.shape[0], NUM_SIZE_CLUSTER))
     size_residuals = np.zeros((pc.shape[0], NUM_SIZE_CLUSTER, 3))
-    scores = np.zeros((pc.shape[0],)) # 3D box score 
-   
-    ep = ops['end_points'] 
+    scores = np.zeros((pc.shape[0],)) # 3D box score
+
+    ep = ops['end_points']
     for i in range(num_batches):
-        feed_dict = {\
-            ops['pointclouds_pl']: pc[i*batch_size:(i+1)*batch_size,...],
-            ops['one_hot_vec_pl']: one_hot_vec[i*batch_size:(i+1)*batch_size,:],
-            ops['is_training_pl']: False}
+        if int_layer is not None:
+            feed_dict = {\
+                ops['pointclouds_pl']: pc[i*batch_size:(i+1)*batch_size,...],
+                ops['one_hot_vec_pl']: one_hot_vec[i*batch_size:(i+1)*batch_size,:],
+                ops['is_training_pl']: False,
+                ops['int_layers_pl']:int_layer}
+        else:
+            feed_dict = {\
+                ops['pointclouds_pl']: pc[i*batch_size:(i+1)*batch_size,...],
+                ops['one_hot_vec_pl']: one_hot_vec[i*batch_size:(i+1)*batch_size,:],
+                ops['is_training_pl']: False}
 
         batch_logits, batch_centers, \
         batch_heading_scores, batch_heading_residuals, \
@@ -139,7 +168,7 @@ def inference(sess, ops, pc, one_hot_vec, batch_size):
         heading_prob = np.max(softmax(batch_heading_scores),1) # B
         size_prob = np.max(softmax(batch_size_scores),1) # B,
         batch_scores = np.log(mask_mean_prob) + np.log(heading_prob) + np.log(size_prob)
-        scores[i*batch_size:(i+1)*batch_size] = batch_scores 
+        scores[i*batch_size:(i+1)*batch_size] = batch_scores
         # Finished computing scores
 
     heading_cls = np.argmax(heading_logits, 1) # B
@@ -181,7 +210,7 @@ def write_detection_results(result_dir, id_list, type_list, box2d_list, center_l
         fout = open(pred_filename, 'w')
         for line in results[idx]:
             fout.write(line+'\n')
-        fout.close() 
+        fout.close()
 
 def fill_files(output_dir, to_fill_filename_list):
     ''' Create empty files if not exist for the filelist. '''
@@ -206,34 +235,52 @@ def test_from_rgb_detection(output_filename, result_dir=None):
     rot_angle_list = []
     score_list = []
     onehot_list = []
+    int_layer_list = []
 
     test_idxs = np.arange(0, len(TEST_DATASET))
     print(len(TEST_DATASET))
     batch_size = BATCH_SIZE
     num_batches = int((len(TEST_DATASET)+batch_size-1)/batch_size)
-    
+
     batch_data_to_feed = np.zeros((batch_size, NUM_POINT, NUM_CHANNEL))
     batch_one_hot_to_feed = np.zeros((batch_size, 3))
     sess, ops = get_session_and_ops(batch_size=batch_size, num_point=NUM_POINT)
+    batch_int_layer_to_feed = np.zeros((batch_size,ops['int_layer_size']))
     for batch_idx in range(num_batches):
         print('batch idx: %d' % (batch_idx))
         start_idx = batch_idx * batch_size
         end_idx = min(len(TEST_DATASET), (batch_idx+1) * batch_size)
         cur_batch_size = end_idx - start_idx
 
-        batch_data, batch_rot_angle, batch_rgb_prob, batch_one_hot_vec = \
+        batch_data, batch_rot_angle, batch_rgb_prob, batch_one_hot_vec, \
+        batch_dim_int, batch_orient_int, batch_conf_int, batch_conv_int = \
             get_batch(TEST_DATASET, test_idxs, start_idx, end_idx,
                 NUM_POINT, NUM_CHANNEL, from_rgb_detection=True)
         batch_data_to_feed[0:cur_batch_size,...] = batch_data
         batch_one_hot_to_feed[0:cur_batch_size,:] = batch_one_hot_vec
 
+        if FLAGS.int_layers is None:
+            batch_int_layer_to_feed = None
+        else:
+            batch_int_layer = []
+            for int_layer in FLAGS.int_layers:
+                if int_layer == 'dim':
+                    batch_int_layer.append(batch_dim_int)
+                elif int_layer == 'orient':
+                    batch_int_layer.append(batch_orient_int)
+                elif int_layer == 'conf':
+                    batch_int_layer.append(batch_conf_int)
+                elif int_layer == 'conv':
+                    batch_int_layer.append(batch_conv_int)
+            batch_int_layer = np.concatenate(batch_int_layer, axis=1)
+            batch_int_layer_to_feed[0:cur_batch_size,:] = batch_int_layer
+
         # Run one batch inference
-	batch_output, batch_center_pred, \
-        batch_hclass_pred, batch_hres_pred, \
+        batch_output, batch_center_pred, batch_hclass_pred, batch_hres_pred, \
         batch_sclass_pred, batch_sres_pred, batch_scores = \
             inference(sess, ops, batch_data_to_feed,
-                batch_one_hot_to_feed, batch_size=batch_size)
-	
+                batch_one_hot_to_feed, batch_size=batch_size, int_layer=batch_int_layer_to_feed)
+
         for i in range(cur_batch_size):
             ps_list.append(batch_data[i,...])
             segp_list.append(batch_output[i,...])
@@ -246,6 +293,8 @@ def test_from_rgb_detection(output_filename, result_dir=None):
             #score_list.append(batch_scores[i])
             score_list.append(batch_rgb_prob[i]) # 2D RGB detection score
             onehot_list.append(batch_one_hot_vec[i])
+            if batch_int_layer_to_feed is not None:
+                int_layer_list.append(batch_int_layer_to_feed[i])
 
     if FLAGS.dump_result:
         with open(output_filename, 'wp') as fp:
@@ -259,6 +308,8 @@ def test_from_rgb_detection(output_filename, result_dir=None):
             pickle.dump(rot_angle_list, fp)
             pickle.dump(score_list, fp)
             pickle.dump(onehot_list, fp)
+            if batch_int_layer_to_feed is not None:
+                pickle.dump(int_layer_list, fp)
 
     # Write detection results for KITTI evaluation
     print('Number of point clouds: %d' % (len(ps_list)))
@@ -289,10 +340,11 @@ def test(output_filename, result_dir=None):
     size_res_list = []
     rot_angle_list = []
     score_list = []
+    int_layer_list = []
 
     test_idxs = np.arange(0, len(TEST_DATASET))
     batch_size = BATCH_SIZE
-    num_batches = len(TEST_DATASET)/batch_size
+    num_batches = int(len(TEST_DATASET)/batch_size)
 
     sess, ops = get_session_and_ops(batch_size=batch_size, num_point=NUM_POINT)
     correct_cnt = 0
@@ -303,18 +355,34 @@ def test(output_filename, result_dir=None):
 
         batch_data, batch_label, batch_center, \
         batch_hclass, batch_hres, batch_sclass, batch_sres, \
-        batch_rot_angle, batch_one_hot_vec = \
+        batch_rot_angle, batch_one_hot_vec, \
+        batch_dim_int, batch_orient_int, batch_conf_int, batch_conv_int = \
             get_batch(TEST_DATASET, test_idxs, start_idx, end_idx,
                 NUM_POINT, NUM_CHANNEL)
 
-	batch_output, batch_center_pred, \
+        if FLAGS.int_layers is None:
+            int_layer = None
+        else:
+            int_layer = []
+            for int_layer_name in FLAGS.int_layers:
+                if int_layer_name == 'dim':
+                    int_layer.append(batch_dim_int)
+                elif int_layer_name == 'orient':
+                    int_layer.append(batch_orient_int)
+                elif int_layer_name == 'conf':
+                    int_layer.append(batch_conf_int)
+                elif int_layer_name == 'conv':
+                    int_layer.append(batch_conv_int)
+            int_layer = np.concatenate(int_layer, axis=1)
+
+        batch_output, batch_center_pred, \
         batch_hclass_pred, batch_hres_pred, \
         batch_sclass_pred, batch_sres_pred, batch_scores = \
             inference(sess, ops, batch_data,
-                batch_one_hot_vec, batch_size=batch_size)
+                batch_one_hot_vec, batch_size=batch_size,  int_layer=int_layer)
 
         correct_cnt += np.sum(batch_output==batch_label)
-	
+
         for i in range(batch_output.shape[0]):
             ps_list.append(batch_data[i,...])
             seg_list.append(batch_label[i,...])

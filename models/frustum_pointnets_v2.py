@@ -18,7 +18,7 @@ from model_util import placeholder_inputs, parse_output_to_tensors, get_loss
 
 
 def get_instance_seg_v2_net(point_cloud, one_hot_vec,
-                            is_training, bn_decay, end_points):
+                            is_training, bn_decay, end_points, bn=True, int_layers=None, fc_scale=None):
     ''' 3D instance segmentation PointNet v2 network.
     Input:
         point_cloud: TF tensor in shape (B,N,4)
@@ -41,30 +41,44 @@ def get_instance_seg_v2_net(point_cloud, one_hot_vec,
     l1_xyz, l1_points = pointnet_sa_module_msg(l0_xyz, l0_points,
         128, [0.2,0.4,0.8], [32,64,128],
         [[32,32,64], [64,64,128], [64,96,128]],
-        is_training, bn_decay, scope='layer1')
+        is_training, bn_decay, scope='layer1', bn=bn)
     l2_xyz, l2_points = pointnet_sa_module_msg(l1_xyz, l1_points,
         32, [0.4,0.8,1.6], [64,64,128],
         [[64,64,128], [128,128,256], [128,128,256]],
-        is_training, bn_decay, scope='layer2')
+        is_training, bn_decay, scope='layer2', bn=bn)
     l3_xyz, l3_points, _ = pointnet_sa_module(l2_xyz, l2_points,
         npoint=None, radius=None, nsample=None, mlp=[128,256,1024],
         mlp2=None, group_all=True, is_training=is_training,
-        bn_decay=bn_decay, scope='layer3')
+        bn_decay=bn_decay, scope='layer3', bn=bn)
 
     # Feature Propagation layers
     l3_points = tf.concat([l3_points, tf.expand_dims(one_hot_vec, 1)], axis=2)
+
+    ## Custom global feature
+    if int_layers is not None:
+        if fc_scale is not None:
+            int_layers = tf_util.fully_connected(int_layers, fc_scale, bn=True,
+                is_training=is_training, scope='seg_int_scale', bn_decay=bn_decay)
+            int_layers = tf_util.dropout(int_layers, keep_prob=0.5,
+                is_training=is_training, scope='seg_int_dp1')
+            # int_layers = tf_util.fully_connected(int_layers, fc_scale, bn=True,
+            #     is_training=is_training, scope='seg_int_scale_2', bn_decay=bn_decay)
+            # int_layers = tf_util.dropout(int_layers, keep_prob=0.5,
+            #                                                 is_training=is_training, scope='seg_int_dp2')
+        l3_points = tf.concat([l3_points, tf.expand_dims(int_layers, 1)], axis=2)
+
     l2_points = pointnet_fp_module(l2_xyz, l3_xyz, l2_points, l3_points,
-        [128,128], is_training, bn_decay, scope='fa_layer1')
+        [128,128], is_training, bn_decay, scope='fa_layer1', bn=bn)
     l1_points = pointnet_fp_module(l1_xyz, l2_xyz, l1_points, l2_points,
-        [128,128], is_training, bn_decay, scope='fa_layer2')
+        [128,128], is_training, bn_decay, scope='fa_layer2', bn=bn)
     l0_points = pointnet_fp_module(l0_xyz, l1_xyz,
         tf.concat([l0_xyz,l0_points],axis=-1), l1_points,
-        [128,128], is_training, bn_decay, scope='fa_layer3')
+        [128,128], is_training, bn_decay, scope='fa_layer3', bn=bn)
 
     # FC layers
     net = tf_util.conv1d(l0_points, 128, 1, padding='VALID', bn=True,
         is_training=is_training, scope='conv1d-fc1', bn_decay=bn_decay)
-    end_points['feats'] = net 
+    end_points['feats'] = net
     net = tf_util.dropout(net, keep_prob=0.7,
         is_training=is_training, scope='dp1')
     logits = tf_util.conv1d(net, 2, 1,
@@ -73,7 +87,7 @@ def get_instance_seg_v2_net(point_cloud, one_hot_vec,
     return logits, end_points
 
 def get_3d_box_estimation_v2_net(object_point_cloud, one_hot_vec,
-                                 is_training, bn_decay, end_points):
+                                 is_training, bn_decay, end_points, bn=True, int_layers=None, fc_scale=None):
     ''' 3D Box Estimation PointNet v2 network.
     Input:
         object_point_cloud: TF tensor in shape (B,M,C)
@@ -84,7 +98,7 @@ def get_3d_box_estimation_v2_net(object_point_cloud, one_hot_vec,
         output: TF tensor in shape (B,3+NUM_HEADING_BIN*2+NUM_SIZE_CLUSTER*4)
             including box centers, heading bin class scores and residuals,
             and size cluster scores and residuals
-    ''' 
+    '''
     # Gather object points
     batch_size = object_point_cloud.get_shape()[0].value
 
@@ -94,19 +108,33 @@ def get_3d_box_estimation_v2_net(object_point_cloud, one_hot_vec,
     l1_xyz, l1_points, l1_indices = pointnet_sa_module(l0_xyz, l0_points,
         npoint=128, radius=0.2, nsample=64, mlp=[64,64,128],
         mlp2=None, group_all=False,
-        is_training=is_training, bn_decay=bn_decay, scope='ssg-layer1')
+        is_training=is_training, bn_decay=bn_decay, scope='ssg-layer1', bn=bn)
     l2_xyz, l2_points, l2_indices = pointnet_sa_module(l1_xyz, l1_points,
         npoint=32, radius=0.4, nsample=64, mlp=[128,128,256],
         mlp2=None, group_all=False,
-        is_training=is_training, bn_decay=bn_decay, scope='ssg-layer2')
+        is_training=is_training, bn_decay=bn_decay, scope='ssg-layer2', bn=bn)
     l3_xyz, l3_points, l3_indices = pointnet_sa_module(l2_xyz, l2_points,
         npoint=None, radius=None, nsample=None, mlp=[256,256,512],
         mlp2=None, group_all=True,
-        is_training=is_training, bn_decay=bn_decay, scope='ssg-layer3')
+        is_training=is_training, bn_decay=bn_decay, scope='ssg-layer3', bn=bn)
 
     # Fully connected layers
     net = tf.reshape(l3_points, [batch_size, -1])
     net = tf.concat([net, one_hot_vec], axis=1)
+
+    ## Custom global feature
+    if int_layers is not None:
+        if fc_scale is not None:
+            int_layers = tf_util.fully_connected(int_layers, fc_scale, bn=True,
+                is_training=is_training, scope='box_int_scale', bn_decay=bn_decay)
+            int_layers = tf_util.dropout(int_layers, keep_prob=0.5,
+                is_training=is_training, scope='box_int_dp1')
+            # int_layers = tf_util.fully_connected(int_layers, fc_scale, bn=True,
+            #     is_training=is_training, scope='box_int_scale2', bn_decay=bn_decay)
+            # int_layers = tf_util.dropout(int_layers, keep_prob=0.5,
+            #     is_training=is_training, scope='box_int_dp2')
+        net = tf.concat([net, int_layers], axis=1)
+
     net = tf_util.fully_connected(net, 512, bn=True,
         is_training=is_training, scope='fc1', bn_decay=bn_decay)
     net = tf_util.fully_connected(net, 256, bn=True,
@@ -120,7 +148,7 @@ def get_3d_box_estimation_v2_net(object_point_cloud, one_hot_vec,
     return output, end_points
 
 
-def get_model(point_cloud, one_hot_vec, is_training, bn_decay=None):
+def get_model(point_cloud, one_hot_vec, is_training, bn_decay=None, bn=True, int_layers=None, fc_scale=None):
     ''' Frustum PointNets model. The model predict 3D object masks and
     amodel bounding boxes for objects in frustum point clouds.
 
@@ -136,11 +164,11 @@ def get_model(point_cloud, one_hot_vec, is_training, bn_decay=None):
         end_points: dict (map from name strings to TF tensors)
     '''
     end_points = {}
-    
+
     # 3D Instance Segmentation PointNet
     logits, end_points = get_instance_seg_v2_net(\
         point_cloud, one_hot_vec,
-        is_training, bn_decay, end_points)
+        is_training, bn_decay, end_points, bn=bn, int_layers=int_layers, fc_scale=fc_scale)
     end_points['mask_logits'] = logits
 
     # Masking
@@ -151,7 +179,7 @@ def get_model(point_cloud, one_hot_vec, is_training, bn_decay=None):
     # T-Net and coordinate translation
     center_delta, end_points = get_center_regression_net(\
         object_point_cloud_xyz, one_hot_vec,
-        is_training, bn_decay, end_points)
+        is_training, bn_decay, end_points, bn=bn, int_layers=int_layers, fc_scale=fc_scale)
     stage1_center = center_delta + mask_xyz_mean # Bx3
     end_points['stage1_center'] = stage1_center
     # Get object point cloud in object coordinate
@@ -161,7 +189,7 @@ def get_model(point_cloud, one_hot_vec, is_training, bn_decay=None):
     # Amodel Box Estimation PointNet
     output, end_points = get_3d_box_estimation_v2_net(\
         object_point_cloud_xyz_new, one_hot_vec,
-        is_training, bn_decay, end_points)
+        is_training, bn_decay, end_points, bn=bn, int_layers=int_layers, fc_scale=fc_scale)
 
     # Parse output to 3D box parameters
     end_points = parse_output_to_tensors(output, end_points)

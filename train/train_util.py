@@ -36,15 +36,19 @@ def get_batch(dataset, idxs, start_idx, end_idx,
     batch_size_class = np.zeros((bsize,), dtype=np.int32)
     batch_size_residual = np.zeros((bsize, 3))
     batch_rot_angle = np.zeros((bsize,))
+    batch_dim_int = np.zeros((bsize, 512))
+    batch_orient_int = np.zeros((bsize, 256))
+    batch_conf_int = np.zeros((bsize, 256))
+    batch_conv_int = np.zeros((bsize, 25088))
     if dataset.one_hot:
         batch_one_hot_vec = np.zeros((bsize,3)) # for car,ped,cyc
     for i in range(bsize):
         if dataset.one_hot:
-            ps,seg,center,hclass,hres,sclass,sres,rotangle,onehotvec = \
+            ps,seg,center,hclass,hres,sclass,sres,rotangle,onehotvec,dim_int,orient_int,conf_int,conv_int = \
                 dataset[idxs[i+start_idx]]
             batch_one_hot_vec[i] = onehotvec
         else:
-            ps,seg,center,hclass,hres,sclass,sres,rotangle = \
+            ps,seg,center,hclass,hres,sclass,sres,rotangle,dim_int,orient_int,conf_int,conv_int = \
                 dataset[idxs[i+start_idx]]
         batch_data[i,...] = ps[:,0:num_channel]
         batch_label[i,:] = seg
@@ -54,15 +58,21 @@ def get_batch(dataset, idxs, start_idx, end_idx,
         batch_size_class[i] = sclass
         batch_size_residual[i] = sres
         batch_rot_angle[i] = rotangle
+        batch_dim_int[i] = dim_int
+        batch_orient_int[i] = orient_int
+        batch_conf_int[i] = conf_int
+        batch_conv_int[i] = conv_int
     if dataset.one_hot:
         return batch_data, batch_label, batch_center, \
             batch_heading_class, batch_heading_residual, \
             batch_size_class, batch_size_residual, \
-            batch_rot_angle, batch_one_hot_vec
+            batch_rot_angle, batch_one_hot_vec, \
+            batch_dim_int, batch_orient_int, batch_conf_int, batch_conv_int
     else:
         return batch_data, batch_label, batch_center, \
             batch_heading_class, batch_heading_residual, \
-            batch_size_class, batch_size_residual, batch_rot_angle
+            batch_size_class, batch_size_residual, batch_rot_angle, \
+            batch_dim_int, batch_orient_int, batch_conf_int, batch_conv_int
 
 def get_batch_from_rgb_detection(dataset, idxs, start_idx, end_idx,
                                  num_point, num_channel):
@@ -70,20 +80,26 @@ def get_batch_from_rgb_detection(dataset, idxs, start_idx, end_idx,
     batch_data = np.zeros((bsize, num_point, num_channel))
     batch_rot_angle = np.zeros((bsize,))
     batch_prob = np.zeros((bsize,))
+    batch_dim_int = np.zeros((bsize, 512))
+    batch_orient_int = np.zeros((bsize, 256))
+    batch_conf_int = np.zeros((bsize, 256))
+    batch_conv_int = np.zeros((bsize, 25088))
     if dataset.one_hot:
         batch_one_hot_vec = np.zeros((bsize,3)) # for car,ped,cyc
     for i in range(bsize):
         if dataset.one_hot:
-            ps,rotangle,prob,onehotvec = dataset[idxs[i+start_idx]]
+            ps,rotangle,prob,onehotvec,dim_int,orient_int,conf_int,conv_int = dataset[idxs[i+start_idx]]
             batch_one_hot_vec[i] = onehotvec
         else:
-            ps,rotangle,prob = dataset[idxs[i+start_idx]]
+            ps,rotangle,prob,dim_int,orient_int,conf_int,conv_int = dataset[idxs[i+start_idx]]
         batch_data[i,...] = ps[:,0:num_channel]
         batch_rot_angle[i] = rotangle
         batch_prob[i] = prob
+        batch_dim_int[i] = dim_int
+        batch_orient_int[i] = orient_int
+        batch_conf_int[i] = conf_int
+        batch_conv_int[i] = conv_int
     if dataset.one_hot:
-        return batch_data, batch_rot_angle, batch_prob, batch_one_hot_vec
+        return batch_data, batch_rot_angle, batch_prob, batch_one_hot_vec, batch_dim_int, batch_orient_int, batch_conf_int, batch_conv_int
     else:
-        return batch_data, batch_rot_angle, batch_prob
-
-
+        return batch_data, batch_rot_angle, batch_prob, batch_dim_int, batch_orient_int, batch_conf_int, batch_conv_int

@@ -5,7 +5,7 @@ Date: September 2017
 '''
 from __future__ import print_function
 
-import cPickle as pickle
+import pickle
 import sys
 import os
 import numpy as np
@@ -70,11 +70,11 @@ def class2angle(pred_cls, residual, num_class, to_label_format=True):
     if to_label_format and angle>np.pi:
         angle = angle - 2*np.pi
     return angle
-        
+
 def size2class(size, type_name):
     ''' Convert 3D bounding box size to template class and residuals.
     todo (rqi): support multiple size clusters per type.
- 
+
     Input:
         size: numpy array of shape (3,) for (l,w,h)
         type_name: string
@@ -132,8 +132,12 @@ class FrustumDataset(object):
                 self.input_list = pickle.load(fp)
                 self.type_list = pickle.load(fp)
                 # frustum_angle is clockwise angle from positive x-axis
-                self.frustum_angle_list = pickle.load(fp) 
+                self.frustum_angle_list = pickle.load(fp)
                 self.prob_list = pickle.load(fp)
+                self.dim_ints = pickle.load(fp)
+                self.orient_ints = pickle.load(fp)
+                self.conf_ints = pickle.load(fp)
+                self.conv_ints = pickle.load(fp)
         else:
             with open(overwritten_data_path,'rb') as fp:
                 self.id_list = pickle.load(fp)
@@ -145,7 +149,11 @@ class FrustumDataset(object):
                 self.heading_list = pickle.load(fp)
                 self.size_list = pickle.load(fp)
                 # frustum_angle is clockwise angle from positive x-axis
-                self.frustum_angle_list = pickle.load(fp) 
+                self.frustum_angle_list = pickle.load(fp)
+                self.dim_ints = pickle.load(fp)
+                self.orient_ints = pickle.load(fp)
+                self.conf_ints = pickle.load(fp)
+                self.conv_ints = pickle.load(fp)
 
     def __len__(self):
             return len(self.input_list)
@@ -162,6 +170,11 @@ class FrustumDataset(object):
             one_hot_vec = np.zeros((3))
             one_hot_vec[g_type2onehotclass[cls_type]] = 1
 
+        dim_int = self.dim_ints[index]
+        orient_int = self.orient_ints[index]
+        conf_int = self.conf_ints[index]
+        conv_int = self.conv_ints[index]
+
         # Get point cloud
         if self.rotate_to_center:
             point_set = self.get_center_view_point_set(index)
@@ -173,12 +186,14 @@ class FrustumDataset(object):
 
         if self.from_rgb_detection:
             if self.one_hot:
-                return point_set, rot_angle, self.prob_list[index], one_hot_vec
+                return point_set, rot_angle, self.prob_list[index], one_hot_vec,\
+                       dim_int, orient_int, conf_int, conv_int
             else:
-                return point_set, rot_angle, self.prob_list[index]
-        
+                return point_set, rot_angle, self.prob_list[index],\
+                       dim_int, orient_int, conf_int, conv_int
+
         # ------------------------------ LABELS ----------------------------
-        seg = self.label_list[index] 
+        seg = self.label_list[index]
         seg = seg[choice]
 
         # Get center point of 3D box
@@ -216,10 +231,12 @@ class FrustumDataset(object):
 
         if self.one_hot:
             return point_set, seg, box3d_center, angle_class, angle_residual,\
-                size_class, size_residual, rot_angle, one_hot_vec
+                size_class, size_residual, rot_angle, one_hot_vec,\
+                dim_int, orient_int, conf_int, conv_int
         else:
             return point_set, seg, box3d_center, angle_class, angle_residual,\
-                size_class, size_residual, rot_angle
+                size_class, size_residual, rot_angle,\
+                dim_int, orient_int, conf_int, conv_int
 
     def get_center_view_rot_angle(self, index):
         ''' Get the frustum rotation angle, it isshifted by pi/2 so that it
@@ -238,7 +255,7 @@ class FrustumDataset(object):
             self.box3d_list[index][6,:])/2.0
         return rotate_pc_along_y(np.expand_dims(box3d_center,0), \
             self.get_center_view_rot_angle(index)).squeeze()
-        
+
     def get_center_view_box3d(self, index):
         ''' Frustum rotation of 3D bounding box corners. '''
         box3d = self.box3d_list[index]
@@ -322,8 +339,8 @@ def compute_box3d_iou(center_pred,
     size_residual = np.vstack([size_residuals[i,size_class[i],:] \
         for i in range(batch_size)])
 
-    iou2d_list = [] 
-    iou3d_list = [] 
+    iou2d_list = []
+    iou3d_list = []
     for i in range(batch_size):
         heading_angle = class2angle(heading_class[i],
             heading_residual[i], NUM_HEADING_BIN)
@@ -336,7 +353,7 @@ def compute_box3d_iou(center_pred,
         corners_3d_label = get_3d_box(box_size_label,
             heading_angle_label, center_label[i])
 
-        iou_3d, iou_2d = box3d_iou(corners_3d, corners_3d_label) 
+        iou_3d, iou_2d = box3d_iou(corners_3d, corners_3d_label)
         iou3d_list.append(iou_3d)
         iou2d_list.append(iou_2d)
     return np.array(iou2d_list, dtype=np.float32), \
@@ -353,7 +370,7 @@ def from_prediction_to_label_format(center, angle_class, angle_res,\
     return h,w,l,tx,ty,tz,ry
 
 if __name__=='__main__':
-    import mayavi.mlab as mlab 
+    import mayavi.mlab as mlab
     sys.path.append(os.path.join(ROOT_DIR, 'mayavi'))
     from viz_util import draw_lidar, draw_gt_boxes3d
     median_list = []
